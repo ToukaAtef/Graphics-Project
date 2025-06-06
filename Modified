@@ -1,0 +1,1198 @@
+#define NOMINMAX
+#define MAXENTRIES 600
+#include <windows.h>
+#include <vector>
+#include <fstream>
+#include <string>
+#include <iostream>
+#include <cmath>
+#include <algorithm>
+#include <stack>
+#include <list>
+#include <climits>
+
+#define ID_FILE_EXIT 1
+#define ID_COLOR_RED 2
+#define ID_COLOR_GREEN 3
+#define ID_COLOR_BLUE 4
+#define ID_SCREEN_CLEAR 5
+#define ID_BACKGROUND_WHITE 6
+#define ID_SAVE 7
+#define ID_LOAD 8
+
+#define ID_LINE_BRESENHAM 100
+#define ID_CIRCLE_DIRECT 101
+#define ID_CIRCLE_POLAR 102
+#define ID_CIRCLE_ITERATIVE_POLAR 103
+#define ID_CIRCLE_MIDPOINT 104
+#define ID_CIRCLE_MODIFIED_MIDPOINT 105
+#define ID_CIRCLE_FILL_LINES 106
+#define ID_CIRCLE_FILL_CIRCLES 107
+#define ID_QUARTER_1 201
+#define ID_QUARTER_2 202
+#define ID_QUARTER_3 203
+#define ID_QUARTER_4 204
+
+#define ID_BEZIER_CURVE 300
+#define ID_HERMITE_CURVE 301
+#define ID_SQUARE_HERMITE 302
+#define ID_RECTANGLE_BEZIER 303
+#define ID_POLYGON_CONVEX 304
+#define ID_POLYGON_NONCONVEX 305
+#define ID_FLOOD_RECURSIVE 306
+#define ID_FLOOD_NON_RECURSIVE 307
+#define ID_EMPTY_SQUARE 308
+
+// Structures for shapes
+struct Line {
+    POINT start, end;
+    COLORREF color;
+};
+
+struct Circle {
+    int xc, yc, R;
+    COLORREF color;
+    int quarter; // 1 to 4 for quarter-based drawing
+    int algorithm; // 0: Direct, 1: Polar, 2: Iterative Polar, 3: Midpoint, 4: Modified Midpoint, 5: Fill Lines, 6: Fill Circles
+};
+
+struct Point {
+    int x, y;
+    Point(int x = 0, int y = 0) : x(x), y(y) {}
+};
+
+struct BezierCurve {
+    Point p0, p1, p2, p3;
+    COLORREF c0, c1, c2, c3;
+};
+
+struct HermiteCurve {
+    Point p0, p1, t0, t1;
+    COLORREF color;
+};
+
+struct AdvancedShape {
+    std::string type; 
+    std::vector<Point> points;
+    COLORREF color;
+};
+
+struct Entry {
+    int xmin, xmax;
+};
+
+struct EdgeRec {
+    double x;
+    double minv;
+    int ymax;
+    bool operator<(const EdgeRec& r) const { return x < r.x; }
+};
+
+typedef std::list<EdgeRec> EdgeList;
+
+std::vector<Line> lines;
+std::vector<Circle> circles;
+std::vector<BezierCurve> bezierCurves;
+std::vector<HermiteCurve> hermiteCurves;
+std::vector<AdvancedShape> advancedShapes;
+COLORREF currentColor = RGB(0, 0, 0); // Default: black
+HBRUSH bgBrush = CreateSolidBrush(RGB(255, 255, 255)); // White
+POINT tempPoint;
+bool firstClick = true;
+std::vector<Point> tempPoints;
+std::vector<COLORREF> tempColors;
+static int windowWidth = 800;
+static int windowHeight = 600;
+
+enum ShapeType { NONE, LINE, CIRCLE, BEZIER, HERMITE, SQUARE_HERMITE, RECTANGLE_BEZIER, POLYGON_CONVEX, POLYGON_NONCONVEX, FLOOD_RECURSIVE, FLOOD_NON_RECURSIVE, EMPTY_SQUARE };
+ShapeType currentShapeType = LINE;
+enum LineAlgorithm { BRESENHAM };
+enum CircleAlgorithm { DIRECT, POLAR, ITERATIVE_POLAR, MIDPOINT, MODIFIED_MIDPOINT, FILL_LINES, FILL_CIRCLES };
+LineAlgorithm currentLineAlgorithm = BRESENHAM;
+CircleAlgorithm currentCircleAlgorithm = DIRECT;
+int currentQuarter = 1; // Default quarter
+
+// Circle functions
+void Draw8Points(HDC hdc, int xc, int yc, int x, int y, COLORREF c) {
+    SetPixel(hdc, xc + x, yc + y, c);
+    SetPixel(hdc, xc - x, yc + y, c);
+    SetPixel(hdc, xc + x, yc - y, c);
+    SetPixel(hdc, xc - x, yc - y, c);
+    SetPixel(hdc, xc + y, yc + x, c);
+    SetPixel(hdc, xc - y, yc + x, c);
+    SetPixel(hdc, xc + y, yc - x, c);
+    SetPixel(hdc, xc - y, yc - x, c);
+}
+
+void DrawPointsQuarter(HDC hdc, int xc, int yc, int x, int y, COLORREF c, int quarter) {
+    switch (quarter) {
+    case 1: // Top-right
+        SetPixel(hdc, xc + x, yc - y, c);
+        SetPixel(hdc, xc + y, yc - x, c);
+        break;
+    case 2: // Top-left
+        SetPixel(hdc, xc - x, yc - y, c);
+        SetPixel(hdc, xc - y, yc - x, c);
+        break;
+    case 3: // Bottom-left
+        SetPixel(hdc, xc - x, yc + y, c);
+        SetPixel(hdc, xc - y, yc + x, c);
+        break;
+    case 4: // Bottom-right
+        SetPixel(hdc, xc + x, yc + y, c);
+        SetPixel(hdc, xc + y, yc + x, c);
+        break;
+    }
+}
+
+void CircleDirectQuarter(HDC hdc, int xc, int yc, int R, COLORREF c, int quarter) {
+    int x = 0;
+    int y = R;
+    while (x <= y) {
+        y = (int)round(sqrt(R * R - x * x));
+        DrawPointsQuarter(hdc, xc, yc, x, y, c, quarter);
+        x++;
+    }
+}
+
+void DDAHorizontalLine(HDC hdc, int x1, int x2, int y, COLORREF c) {
+    if (x1 > x2) std::swap(x1, x2);
+    for (int x = x1; x <= x2; x++)
+        SetPixel(hdc, x, y, c);
+}
+
+void FillCircleWithLines(HDC hdc, int xc, int yc, int R, int quarter, COLORREF c) {
+    for (int y = 0; y <= R; y++) {
+        int x = (int)round(sqrt(R * R - y * y));
+        switch (quarter) {
+        case 1: // Top-right
+            DDAHorizontalLine(hdc, xc, xc + x, yc - y, c);
+            break;
+        case 2: // Top-left
+            DDAHorizontalLine(hdc, xc - x, xc, yc - y, c);
+            break;
+        case 3: // Bottom-left
+            DDAHorizontalLine(hdc, xc - x, xc, yc + y, c);
+            break;
+        case 4: // Bottom-right
+            DDAHorizontalLine(hdc, xc, xc + x, yc + y, c);
+            break;
+        }
+    }
+}
+
+void FillCircleWithCircles(HDC hdc, int xc, int yc, int R, int quarter, COLORREF c) {
+    for (int r = 0; r <= R; r++) {
+        CircleDirectQuarter(hdc, xc, yc, r, c, quarter);
+    }
+}
+
+void CircleDirect(HDC hdc, int xc, int yc, int R, COLORREF c) {
+    int x = 0;
+    int y = R;
+    while (x <= y) {
+        y = (int)round(sqrt(R * R - x * x));
+        Draw8Points(hdc, xc, yc, x, y, c);
+        x++;
+    }
+}
+
+void CirclePolar(HDC hdc, int xc, int yc, int R, COLORREF c) {
+    int x, y;
+    double theta = 0, dtheta = 1.0 / R;
+    while (theta <= 3.14159 / 4) {
+        x = (int)round(R * cos(theta));
+        y = (int)round(R * sin(theta));
+        Draw8Points(hdc, xc, yc, x, y, c);
+        theta += dtheta;
+    }
+}
+
+void CircleIterativePolar(HDC hdc, int xc, int yc, int R, COLORREF c) {
+    double x = R, y = 0;
+    double dtheta = 1.0 / R;
+    double cos_d = cos(dtheta), sin_d = sin(dtheta);
+    while (x > y) {
+        Draw8Points(hdc, xc, yc, (int)round(x), (int)round(y), c);
+        double x1 = x * cos_d - y * sin_d;
+        y = x * sin_d + y * cos_d;
+        x = x1;
+    }
+}
+
+void CircleMidpoint(HDC hdc, int xc, int yc, int R, COLORREF c) {
+    int x = 0, y = R;
+    int d = 1 - R;
+    Draw8Points(hdc, xc, yc, x, y, c);
+    while (x < y) {
+        if (d < 0)
+            d += 2 * x + 3;
+        else {
+            d += 2 * (x - y) + 5;
+            y--;
+        }
+        x++;
+        Draw8Points(hdc, xc, yc, x, y, c);
+    }
+}
+
+void CircleModifiedMidpoint(HDC hdc, int xc, int yc, int R, COLORREF c) {
+    int x = 0, y = R;
+    int d = 1 - R;
+    int d1 = 3, d2 = 5 - 2 * R;
+    Draw8Points(hdc, xc, yc, x, y, c);
+    while (x < y) {
+        x++;
+        if (d < 0) {
+            d += d1;
+            d1 += 2;
+            d2 += 2;
+        }
+        else {
+            y--;
+            d += d2;
+            d1 += 2;
+            d2 += 4;
+        }
+        Draw8Points(hdc, xc, yc, x, y, c);
+    }
+}
+
+void DrawBresenhamLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color) {
+    int dx = abs(x2 - x1), dy = abs(y2 - y1);
+    int sx = x1 < x2 ? 1 : -1;
+    int sy = y1 < y2 ? 1 : -1;
+    int err = dx - dy;
+
+    while (true) {
+        SetPixel(hdc, x1, y1, color);
+        if (x1 == x2 && y1 == y2) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x1 += sx; }
+        if (e2 < dx) { err += dx; y1 += sy; }
+    }
+}
+
+void DrawBezierCurve(HDC hdc, Point p0, COLORREF c0, Point p1, COLORREF c1, Point p2, COLORREF c2, Point p3, COLORREF c3) {
+    const int STEPS = 50;
+
+    for (double i = 0; i <= STEPS; i+=0.02) {
+        //   0 < t < 1
+        double t = (double)i / STEPS;
+        double u = 1.0 - t;
+        
+        // Cubic Bezier curve equation ((1-t) + t)^3
+        // x = x0*(1-t)^3 + x1*3t*(1-t)^2 + x2*3t^2(1-t) + x3*t^3
+        double x = pow(u, 3) * p0.x + 3 * pow(u, 2) * t * p1.x + 3 * u * pow(t, 2) * p2.x + pow(t, 3) * p3.x;
+        
+        // y = y0*(1-t)^3 + y1*3t*(1-t)^2 + y2*3t^2(1-t) + y3*t^3
+        double y = pow(u, 3) * p0.y + 3 * pow(u, 2) * t * p1.y + 3 * u * pow(t, 2) * p2.y + pow(t, 3) * p3.y;
+
+        int r0 = GetRValue(c0), g0 = GetGValue(c0), b0 = GetBValue(c0);
+        int r1 = GetRValue(c1), g1 = GetGValue(c1), b1 = GetBValue(c1);
+        int r2 = GetRValue(c2), g2 = GetGValue(c2), b2 = GetBValue(c2);
+        int r3 = GetRValue(c3), g3 = GetGValue(c3), b3 = GetBValue(c3);
+
+        int r = (int)(pow(u, 3) * r0 + 3 * pow(u, 2) * t * r1 + 3 * u * pow(t, 2) * r2 + pow(t, 3) * r3);
+        int g = (int)(pow(u, 3) * g0 + 3 * pow(u, 2) * t * g1 + 3 * u * pow(t, 2) * g2 + pow(t, 3) * g3);
+        int b = (int)(pow(u, 3) * b0 + 3 * pow(u, 2) * t * b1 + 3 * u * pow(t, 2) * b2 + pow(t, 3) * b3);
+
+        // To make sure that colors in the range and rounded
+        r = (r < 0) ? 0 : (r > 255) ? 255 : r;
+        g = (g < 0) ? 0 : (g > 255) ? 255 : g;
+        b = (b < 0) ? 0 : (b > 255) ? 255 : b;
+
+        SetPixel(hdc, (int)x, (int)y, RGB(r, g, b));
+    
+    }
+}
+
+void DrawHermiteCurve(HDC hdc, Point p0, Point p1, Point t0, Point t1, COLORREF color) {
+    const int STEPS = 50;
+    HPEN hPen = CreatePen(PS_SOLID, 2, color); 
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+    MoveToEx(hdc, p0.x, p0.y, NULL);
+    
+    for (double i = 0; i <= STEPS; i += 0.02) {
+        double t = (double)i / STEPS;
+        double t2 = t * t;
+        double t3 = t2 * t;
+    
+        double first = 2 * t3 - 3 * t2 + 1;
+        double second = t3 - 2 * t2 + t;
+        double third = -2 * t3 + 3 * t2;
+        double fourth = t3 - t2;
+    
+        double x = first * p0.x + second * t0.x + third * p1.x + fourth * t1.x;
+        double y = first * p0.y + second * t0.y + third * p1.y + fourth * t1.y;
+        LineTo(hdc, (int)x, (int)y);
+    }
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hPen);
+}
+
+void FillSquareWithHermiteCurve(HDC hdc, Point topLeft, int size, COLORREF color) {
+    MoveToEx(hdc, topLeft.x, topLeft.y, NULL);
+    LineTo(hdc, topLeft.x + size, topLeft.y);
+    LineTo(hdc, topLeft.x + size, topLeft.y + size);
+    LineTo(hdc, topLeft.x, topLeft.y + size);
+    LineTo(hdc, topLeft.x, topLeft.y);
+    for (int x = topLeft.x; x <= topLeft.x + size; x += 2) { 
+        Point p0(x, topLeft.y);
+        Point p1(x, topLeft.y + size);
+        Point t0(0, size / 4);
+        Point t1(0, -size / 4);
+        DrawHermiteCurve(hdc, p0, p1, t0, t1, color);
+    }
+}
+
+void FillRectangleWithBezierCurve(HDC hdc, Point topLeft, Point bottomRight, COLORREF color) {
+    MoveToEx(hdc, topLeft.x, topLeft.y, NULL);
+    LineTo(hdc, bottomRight.x, topLeft.y);
+    LineTo(hdc, bottomRight.x, bottomRight.y);
+    LineTo(hdc, topLeft.x, bottomRight.y);
+    LineTo(hdc, topLeft.x, topLeft.y);
+
+    int width = bottomRight.x - topLeft.x;
+    for (int y = topLeft.y; y <= bottomRight.y; y += 1) {
+        Point p0(topLeft.x, y);
+        Point p1(topLeft.x + width / 3, y);
+        Point p2(topLeft.x + 2 * width / 3, y);
+        Point p3(bottomRight.x, y);
+        DrawBezierCurve(hdc, p0, color, p1, color, p2, color, p3, color);
+    }
+}
+
+void DrawEmptySquare(HDC hdc, Point topLeft, int size, COLORREF color) {
+    HPEN hPen = CreatePen(PS_SOLID, 2, color); 
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+    
+    MoveToEx(hdc, topLeft.x, topLeft.y, NULL);
+    LineTo(hdc, topLeft.x + size, topLeft.y);
+    LineTo(hdc, topLeft.x + size, topLeft.y + size);
+    LineTo(hdc, topLeft.x, topLeft.y + size);
+    LineTo(hdc, topLeft.x, topLeft.y);
+
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hPen);
+}
+
+void FloodFillRecursive(HDC hdc, int x, int y, COLORREF fillColor, COLORREF boundaryColor) {
+    if (x < 0 || x >= windowWidth || y < 0 || y >= windowHeight) return;
+    COLORREF currentColor = GetPixel(hdc, x, y);
+    if (currentColor == boundaryColor || currentColor == fillColor) return;
+    SetPixel(hdc, x, y, fillColor);
+    FloodFillRecursive(hdc, x + 1, y, fillColor, boundaryColor);
+    FloodFillRecursive(hdc, x - 1, y, fillColor, boundaryColor);
+    FloodFillRecursive(hdc, x, y + 1, fillColor, boundaryColor);
+    FloodFillRecursive(hdc, x, y - 1, fillColor, boundaryColor);
+}
+
+void FloodFillNonRecursive(HDC hdc, int x, int y, COLORREF fillColor, COLORREF boundaryColor) {
+    std::stack<Point> stack;
+    stack.push(Point(x, y));
+    while (!stack.empty()) {
+        Point p = stack.top();
+        stack.pop();
+        COLORREF currentColor = GetPixel(hdc, p.x, p.y);
+        if (currentColor == boundaryColor || currentColor == fillColor) continue;
+        SetPixel(hdc, p.x, p.y, fillColor);
+        stack.push(Point(p.x + 1, p.y));
+        stack.push(Point(p.x - 1, p.y));
+        stack.push(Point(p.x, p.y + 1));
+        stack.push(Point(p.x, p.y - 1));
+    }
+}
+
+void InitEntries(Entry table[]) {
+    for (int i = 0; i < MAXENTRIES; i++) {
+        table[i].xmin = INT_MAX; 
+        table[i].xmax = INT_MIN; 
+    }
+}
+
+void ScanEdge(POINT v1, POINT v2, Entry table[]) {
+    if (v1.y == v2.y) return;
+    if (v1.y > v2.y) std::swap(v1, v2);
+    double minv = (double)(v2.x - v1.x) / (v2.y - v1.y);
+    double x = v1.x;
+    int y = v1.y;
+    while (y < v2.y) {
+        if (x < table[y].xmin) table[y].xmin = (int)ceil(x);
+        if (x > table[y].xmax) table[y].xmax = (int)floor(x);
+        y++;
+        x += minv;
+    }
+}
+
+void DrawScanLines(HDC hdc, Entry table[], COLORREF color) {
+    for (int y = 0; y < MAXENTRIES; y++) {
+        if (table[y].xmin < table[y].xmax) {
+            for (int x = table[y].xmin; x <= table[y].xmax; x++) {
+                SetPixel(hdc, x, y, color);
+            }
+        }
+    }
+}
+
+void ConvexFill(HDC hdc, POINT p[], int n, COLORREF color) {
+    Entry* table = new Entry[MAXENTRIES];
+    InitEntries(table);
+    POINT v1 = p[n - 1];
+    for (int i = 0; i < n; i++) {
+        POINT v2 = p[i];
+        ScanEdge(v1, v2, table);
+        v1 = p[i];
+    }
+    DrawScanLines(hdc, table, color);
+    delete[] table;
+}
+
+EdgeRec InitEdgeRec(POINT& v1, POINT& v2) {
+    if (v1.y > v2.y) std::swap(v1, v2);
+    EdgeRec rec;
+    rec.x = v1.x;
+    rec.ymax = v2.y;
+    rec.minv = (double)(v2.x - v1.x) / (v2.y - v1.y);
+    return rec;
+}
+
+void InitEdgeTable(POINT* polygon, int n, EdgeList table[]) {
+    POINT v1 = polygon[n - 1];
+    for (int i = 0; i < n; i++) {
+        POINT v2 = polygon[i];
+        if (v1.y == v2.y) { v1 = v2; continue; }
+        EdgeRec rec = InitEdgeRec(v1, v2);
+        table[v1.y].push_back(rec);
+        v1 = polygon[i];
+    }
+}
+
+void GeneralPolygonFill(HDC hdc, POINT* polygon, int n, COLORREF c) {
+    EdgeList* table = new EdgeList[MAXENTRIES];
+    InitEdgeTable(polygon, n, table);
+    int y = 0;
+    while (y < MAXENTRIES && table[y].size() == 0) y++;
+
+    if (y == MAXENTRIES) {
+        delete[] table;
+        return;
+    }
+
+    EdgeList ActiveList = table[y];
+    while (!ActiveList.empty()) {
+        ActiveList.sort();
+        for (EdgeList::iterator it = ActiveList.begin(); it != ActiveList.end(); ++it) {
+            int x1 = (int)ceil(it->x);
+            EdgeList::iterator nextIt = it;
+            ++nextIt;
+            if (nextIt != ActiveList.end()) {
+                int x2 = (int)floor(nextIt->x);
+                for (int x = x1; x <= x2; x++) {
+                    SetPixel(hdc, x, y, c);
+                }
+            }
+        }
+        y++;
+        EdgeList::iterator it = ActiveList.begin();
+        while (it != ActiveList.end()) {
+            if (y == it->ymax) {
+                it = ActiveList.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (EdgeList::iterator it = ActiveList.begin(); it != ActiveList.end(); ++it) {
+            it->x += it->minv;
+        }
+        ActiveList.insert(ActiveList.end(), table[y].begin(), table[y].end());
+    }
+    delete[] table;
+}
+
+
+void DrawAllShapes(HDC hdc) {
+    // Draw lines
+    for (auto& line : lines) {
+        DrawBresenhamLine(hdc, line.start.x, line.start.y, line.end.x, line.end.y, line.color);
+    }
+    // Draw circles
+    for (auto& circle : circles) {
+        switch (circle.algorithm) {
+        case DIRECT:
+            CircleDirect(hdc, circle.xc, circle.yc, circle.R, circle.color);
+            break;
+        case POLAR:
+            CirclePolar(hdc, circle.xc, circle.yc, circle.R, circle.color);
+            break;
+        case ITERATIVE_POLAR:
+            CircleIterativePolar(hdc, circle.xc, circle.yc, circle.R, circle.color);
+            break;
+        case MIDPOINT:
+            CircleMidpoint(hdc, circle.xc, circle.yc, circle.R, circle.color);
+            break;
+        case MODIFIED_MIDPOINT:
+            CircleModifiedMidpoint(hdc, circle.xc, circle.yc, circle.R, circle.color);
+            break;
+        case FILL_LINES:
+            FillCircleWithLines(hdc, circle.xc, circle.yc, circle.R, circle.quarter, circle.color);
+            CircleDirect(hdc, circle.xc, circle.yc, circle.R, circle.color); // Draw outline
+            break;
+        case FILL_CIRCLES:
+            FillCircleWithCircles(hdc, circle.xc, circle.yc, circle.R, circle.quarter, circle.color);
+            CircleDirect(hdc, circle.xc, circle.yc, circle.R, circle.color); 
+            break;
+        }
+    }
+    for (auto& bezier : bezierCurves) {
+        DrawBezierCurve(hdc, bezier.p0, bezier.c0, bezier.p1, bezier.c1, bezier.p2, bezier.c2, bezier.p3, bezier.c3);
+    }
+    for (auto& hermite : hermiteCurves) {
+        DrawHermiteCurve(hdc, hermite.p0, hermite.p1, hermite.t0, hermite.t1, hermite.color);
+    }
+    for (auto& shape : advancedShapes) {
+        if (shape.type == "square_hermite" && shape.points.size() == 2) {
+            int size = std::max(abs(shape.points[1].x - shape.points[0].x), abs(shape.points[1].y - shape.points[0].y));
+            Point topLeft(std::min(shape.points[0].x, shape.points[1].x), std::min(shape.points[0].y, shape.points[1].y));
+            FillSquareWithHermiteCurve(hdc, topLeft, size, shape.color);
+        }
+        else if (shape.type == "rectangle_bezier" && shape.points.size() == 2) {
+            Point topLeft(std::min(shape.points[0].x, shape.points[1].x), std::min(shape.points[0].y, shape.points[1].y));
+            Point bottomRight(std::max(shape.points[0].x, shape.points[1].x), std::max(shape.points[0].y, shape.points[1].y));
+            FillRectangleWithBezierCurve(hdc, topLeft, bottomRight, shape.color);
+        }
+        else if (shape.type == "empty_square" && shape.points.size() == 2) {
+            int size = std::max(abs(shape.points[1].x - shape.points[0].x), abs(shape.points[1].y - shape.points[0].y));
+            Point topLeft(std::min(shape.points[0].x, shape.points[1].x), std::min(shape.points[0].y, shape.points[1].y));
+            DrawEmptySquare(hdc, topLeft, size, shape.color);
+        }
+        else if (shape.type == "polygon_convex" && shape.points.size() >= 3) {
+            POINT* pArray = new POINT[shape.points.size()];
+            for (size_t i = 0; i < shape.points.size(); i++) {
+                pArray[i].x = shape.points[i].x;
+                pArray[i].y = shape.points[i].y;
+            }
+            ConvexFill(hdc, pArray, shape.points.size(), shape.color);
+            delete[] pArray;
+        }
+        else if (shape.type == "polygon_nonconvex" && shape.points.size() >= 4) {
+            POINT* pArray = new POINT[shape.points.size()];
+            for (size_t i = 0; i < shape.points.size(); i++) {
+                pArray[i].x = shape.points[i].x;
+                pArray[i].y = shape.points[i].y;
+            }
+            GeneralPolygonFill(hdc, pArray, shape.points.size(), shape.color);
+            delete[] pArray;
+        }
+    }
+}
+
+void SaveData() {
+    std::ofstream file("shapes.txt");
+    // Save lines
+    file << "Lines\n";
+    for (auto& line : lines) {
+        file << line.start.x << " " << line.start.y << " "
+            << line.end.x << " " << line.end.y << " "
+            << (int)GetRValue(line.color) << " "
+            << (int)GetGValue(line.color) << " "
+            << (int)GetBValue(line.color) << "\n";
+    }
+    // Save circles
+    file << "Circles\n";
+    for (auto& circle : circles) {
+        file << circle.xc << " " << circle.yc << " " << circle.R << " "
+            << (int)GetRValue(circle.color) << " "
+            << (int)GetGValue(circle.color) << " "
+            << (int)GetBValue(circle.color) << " "
+            << circle.quarter << " " << circle.algorithm << "\n";
+    }
+    file << "BezierCurves\n";
+    for (auto& bezier : bezierCurves) {
+        file << bezier.p0.x << " " << bezier.p0.y << " "
+             << bezier.p1.x << " " << bezier.p1.y << " "
+             << bezier.p2.x << " " << bezier.p2.y << " "
+             << bezier.p3.x << " " << bezier.p3.y << " "
+             << (int)GetRValue(bezier.c0) << " " << (int)GetGValue(bezier.c0) << " " << (int)GetBValue(bezier.c0) << " "
+             << (int)GetRValue(bezier.c1) << " " << (int)GetGValue(bezier.c1) << " " << (int)GetBValue(bezier.c1) << " "
+             << (int)GetRValue(bezier.c2) << " " << (int)GetGValue(bezier.c2) << " " << (int)GetBValue(bezier.c2) << " "
+             << (int)GetRValue(bezier.c3) << " " << (int)GetGValue(bezier.c3) << " " << (int)GetBValue(bezier.c3) << "\n";
+    }
+    file << "HermiteCurves\n";
+    for (auto& hermite : hermiteCurves) {
+        file << hermite.p0.x << " " << hermite.p0.y << " "
+             << hermite.p1.x << " " << hermite.p1.y << " "
+             << hermite.t0.x << " " << hermite.t0.y << " "
+             << hermite.t1.x << " " << hermite.t1.y << " "
+             << (int)GetRValue(hermite.color) << " " << (int)GetGValue(hermite.color) << " " << (int)GetBValue(hermite.color) << "\n";
+    }
+    file << "AdvancedShapes\n";
+    for (auto& shape : advancedShapes) {
+        file << shape.type << " " << shape.points.size() << " ";
+        for (const auto& p : shape.points) {
+            file << p.x << " " << p.y << " ";
+        }
+        file << (int)GetRValue(shape.color) << " " << (int)GetGValue(shape.color) << " " << (int)GetBValue(shape.color) << "\n";
+    }
+    file.close();
+    std::cout << "Saved " << lines.size() << " line(s), " << circles.size() << " circle(s), "
+              << bezierCurves.size() << " Bezier curve(s), " << hermiteCurves.size() << " Hermite curve(s), "
+              << advancedShapes.size() << " advanced shape(s) to shapes.txt\n";
+}
+
+void LoadData(HWND hwnd) {
+    std::ifstream file("shapes.txt");
+    if (!file.is_open()) {
+        std::cout << "Could not open shapes.txt\n";
+        return;
+    }
+
+    lines.clear();
+    circles.clear();
+    bezierCurves.clear();
+    hermiteCurves.clear();
+    advancedShapes.clear();
+    tempPoints.clear();
+    tempColors.clear();
+    std::string lineType;
+    int countLines = 0, countCircles = 0, countBeziers = 0, countHermites = 0, countAdvanced = 0;
+
+    while (std::getline(file, lineType)) {
+        if (lineType == "Lines") {
+            Line l;
+            int r, g, b;
+            while (file >> l.start.x >> l.start.y >> l.end.x >> l.end.y >> r >> g >> b) {
+                l.color = RGB(r, g, b);
+                lines.push_back(l);
+                countLines++;
+                if (file.peek() == '\n') break; // Move to next line type
+            }
+        }
+        else if (lineType == "Circles") {
+            Circle c;
+            int r, g, b;
+            while (file >> c.xc >> c.yc >> c.R >> r >> g >> b >> c.quarter >> c.algorithm) {
+                c.color = RGB(r, g, b);
+                circles.push_back(c);
+                countCircles++;
+                if (file.peek() == EOF || file.peek() == '\n') break;
+            }
+        }
+        else if (lineType == "BezierCurves") {
+            BezierCurve b;
+            int r0, g0, b0, r1, g1, b1, r2, g2, b2, r3, g3, b3;
+            while (file >> b.p0.x >> b.p0.y >> b.p1.x >> b.p1.y >> b.p2.x >> b.p2.y >> b.p3.x >> b.p3.y
+                       >> r0 >> g0 >> b0 >> r1 >> g1 >> b1 >> r2 >> g2 >> b2 >> r3 >> g3 >> b3) {
+                b.c0 = RGB(r0, g0, b0);
+                b.c1 = RGB(r1, g1, b1);
+                b.c2 = RGB(r2, g2, b2);
+                b.c3 = RGB(r3, g3, b3);
+                bezierCurves.push_back(b);
+                countBeziers++;
+                if (file.peek() == '\n' || file.peek() == EOF) break;
+            }
+        }
+        else if (lineType == "HermiteCurves") {
+            HermiteCurve h;
+            int r, g, b;
+            while (file >> h.p0.x >> h.p0.y >> h.p1.x >> h.p1.y >> h.t0.x >> h.t0.y >> h.t1.x >> h.t1.y >> r >> g >> b) {
+                h.color = RGB(r, g, b);
+                hermiteCurves.push_back(h);
+                countHermites++;
+                if (file.peek() == '\n' || file.peek() == EOF) break;
+            }
+        }
+        else if (lineType == "AdvancedShapes") {
+            AdvancedShape s;
+            int numPoints, r, g, b;
+            std::string type;
+            while (file >> type >> numPoints) {
+                s.type = type;
+                s.points.resize(numPoints);
+                for (int i = 0; i < numPoints; i++) {
+                    file >> s.points[i].x >> s.points[i].y;
+                }
+                file >> r >> g >> b;
+                s.color = RGB(r, g, b);
+                advancedShapes.push_back(s);
+                countAdvanced++;
+                if (file.peek() == '\n' || file.peek() == EOF) break;
+            }
+        }
+    }
+    file.close();
+    std::cout << "Loaded " << countLines << " line(s), " << countCircles << " circle(s), "
+              << countBeziers << " Bezier curve(s), " << countHermites << " Hermite curve(s), "
+              << countAdvanced << " advanced shape(s) from shapes.txt\n";
+ 
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+void AddMenus(HWND hwnd) {
+    HMENU hMenubar = CreateMenu();
+    HMENU hFile = CreateMenu();
+    HMENU hColor = CreateMenu();
+    HMENU hLineAlgorithms = CreateMenu();
+    HMENU hCircleAlgorithms = CreateMenu();
+    HMENU hAdvancedShapes = CreateMenu();
+    HMENU hQuarter = CreateMenu();
+
+    // File menu
+    AppendMenu(hFile, MF_STRING, ID_BACKGROUND_WHITE, "Set Background White");
+    AppendMenu(hFile, MF_STRING, ID_SCREEN_CLEAR, "Clear Screen");
+    AppendMenu(hFile, MF_STRING, ID_SAVE, "Save");
+    AppendMenu(hFile, MF_STRING, ID_LOAD, "Load");
+    AppendMenu(hFile, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hFile, MF_STRING, ID_FILE_EXIT, "Exit");
+
+    // Color menu
+    AppendMenu(hColor, MF_STRING, ID_COLOR_RED, "Red");
+    AppendMenu(hColor, MF_STRING, ID_COLOR_GREEN, "Green");
+    AppendMenu(hColor, MF_STRING, ID_COLOR_BLUE, "Blue");
+
+    // Line algorithms
+    AppendMenu(hLineAlgorithms, MF_STRING, ID_LINE_BRESENHAM, "Bresenham Line");
+    AppendMenu(hLineAlgorithms, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hLineAlgorithms, MF_STRING, 0, "Select to draw lines");
+
+    // Circle algorithms
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_DIRECT, "Direct Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_POLAR, "Polar Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_ITERATIVE_POLAR, "Iterative Polar Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_MIDPOINT, "Midpoint Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_MODIFIED_MIDPOINT, "Modified Midpoint Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_FILL_LINES, "Fill with Lines");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_FILL_CIRCLES, "Fill with Circles");
+    AppendMenu(hCircleAlgorithms, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hCircleAlgorithms, MF_STRING, 0, "Select to draw circles");
+
+    // Quarter selection
+    AppendMenu(hQuarter, MF_STRING, ID_QUARTER_1, "Quarter 1 (Top-Right)");
+    AppendMenu(hQuarter, MF_STRING, ID_QUARTER_2, "Quarter 2 (Top-Left)");
+    AppendMenu(hQuarter, MF_STRING, ID_QUARTER_3, "Quarter 3 (Bottom-Left)");
+    AppendMenu(hQuarter, MF_STRING, ID_QUARTER_4, "Quarter 4 (Bottom-Right)");
+
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_BEZIER_CURVE, "Bezier Curve");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_HERMITE_CURVE, "Hermite Curve");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_SQUARE_HERMITE, "Square (Hermite Fill)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_RECTANGLE_BEZIER, "Rectangle (Bezier Fill)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_POLYGON_CONVEX, "Polygon (Convex Fill)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_POLYGON_NONCONVEX, "Polygon (Non-Convex Fill)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_FLOOD_RECURSIVE, "Flood Fill (Recursive)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_FLOOD_NON_RECURSIVE, "Flood Fill (Non-Recursive)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_EMPTY_SQUARE, "Empty Square");
+    AppendMenu(hAdvancedShapes, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hAdvancedShapes, MF_STRING, 0, "Select for advanced shapes");
+
+    // Main menu
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hFile, "File");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hColor, "Shape Color");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hLineAlgorithms, "Line Algorithms");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hCircleAlgorithms, "Circle Algorithms");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hAdvancedShapes, "Advanced Shapes");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hQuarter, "Quarter Selection");
+
+    SetMenu(hwnd, hMenubar);
+}
+
+LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_CREATE:
+        AddMenus(hwnd);
+        break;
+
+    case WM_COMMAND:
+        switch (wp) {
+        case ID_FILE_EXIT:
+            PostQuitMessage(0);
+            break;
+        case ID_COLOR_RED:
+            currentColor = RGB(255, 0, 0);
+            break;
+        case ID_COLOR_GREEN:
+            currentColor = RGB(0, 255, 0);
+            break;
+        case ID_COLOR_BLUE:
+            currentColor = RGB(0, 0, 255);
+            break;
+        case ID_BACKGROUND_WHITE:
+            bgBrush = CreateSolidBrush(RGB(255, 255, 255));
+            InvalidateRect(hwnd, NULL, TRUE);
+            break;
+        case ID_SCREEN_CLEAR:
+            lines.clear();
+            circles.clear();
+            bezierCurves.clear();
+            hermiteCurves.clear();
+            advancedShapes.clear();
+            tempPoints.clear();
+            tempColors.clear();
+            InvalidateRect(hwnd, NULL, TRUE);
+            break;
+        case ID_SAVE:
+            SaveData();
+            break;
+        case ID_LOAD:
+            LoadData(hwnd);
+            break;
+        case ID_LINE_BRESENHAM:
+            currentShapeType = LINE;
+            currentLineAlgorithm = BRESENHAM;
+            break;
+        case ID_CIRCLE_DIRECT:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = DIRECT;
+            break;
+        case ID_CIRCLE_POLAR:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = POLAR;
+            break;
+        case ID_CIRCLE_ITERATIVE_POLAR:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = ITERATIVE_POLAR;
+            break;
+        case ID_CIRCLE_MIDPOINT:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = MIDPOINT;
+            break;
+        case ID_CIRCLE_MODIFIED_MIDPOINT:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = MODIFIED_MIDPOINT;
+            break;
+        case ID_CIRCLE_FILL_LINES:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = FILL_LINES;
+            break;
+        case ID_CIRCLE_FILL_CIRCLES:
+            currentShapeType = CIRCLE;
+            currentCircleAlgorithm = FILL_CIRCLES;
+            break;
+        case ID_BEZIER_CURVE:
+            currentShapeType = BEZIER;
+            break;
+        case ID_HERMITE_CURVE:
+            currentShapeType = HERMITE;
+            break;
+        case ID_SQUARE_HERMITE:
+            currentShapeType = SQUARE_HERMITE;
+            break;
+        case ID_RECTANGLE_BEZIER:
+            currentShapeType = RECTANGLE_BEZIER;
+            break;
+        case ID_POLYGON_CONVEX:
+            currentShapeType = POLYGON_CONVEX;
+            break;
+        case ID_POLYGON_NONCONVEX:
+            currentShapeType = POLYGON_NONCONVEX;
+            break;
+        case ID_FLOOD_RECURSIVE:
+            currentShapeType = FLOOD_RECURSIVE;
+            break;
+        case ID_FLOOD_NON_RECURSIVE:
+            currentShapeType = FLOOD_NON_RECURSIVE;
+            break;
+        case ID_EMPTY_SQUARE:
+            currentShapeType = EMPTY_SQUARE;
+            break;
+        case ID_QUARTER_1:
+            currentQuarter = 1;
+            break;
+        case ID_QUARTER_2:
+            currentQuarter = 2;
+            break;
+        case ID_QUARTER_3:
+            currentQuarter = 3;
+            break;
+        case ID_QUARTER_4:
+            currentQuarter = 4;
+            break;
+        }
+        break;
+
+    case WM_LBUTTONDOWN: {
+        POINT p = { LOWORD(lp), HIWORD(lp) };
+        tempPoints.push_back(Point(p.x, p.y));
+        tempColors.push_back(currentColor);
+        
+        if (firstClick) {
+            tempPoint = p;
+            firstClick = false;
+            SetCapture(hwnd);
+        }
+
+        HDC hdc = GetDC(hwnd);
+        
+        if (currentShapeType == LINE && tempPoints.size() == 2) {
+            Line l;
+            l.start = tempPoint;
+            l.end = p;
+            l.color = currentColor;
+            lines.push_back(l);
+            DrawBresenhamLine(hdc, l.start.x, l.start.y, l.end.x, l.end.y, l.color);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == CIRCLE && tempPoints.size() == 2) {
+            Circle c;
+            c.xc = tempPoint.x;
+            c.yc = tempPoint.y;
+            c.R = (int)sqrt((p.x - tempPoint.x) * (p.x - tempPoint.x) + (p.y - tempPoint.y) * (p.y - tempPoint.y));
+            c.color = currentColor;
+            c.quarter = currentQuarter;
+            c.algorithm = currentCircleAlgorithm;
+            circles.push_back(c);
+            switch (c.algorithm) {
+            case DIRECT:
+                CircleDirect(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            case POLAR:
+                CirclePolar(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            case ITERATIVE_POLAR:
+                CircleIterativePolar(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            case MIDPOINT:
+                CircleMidpoint(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            case MODIFIED_MIDPOINT:
+                CircleModifiedMidpoint(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            case FILL_LINES:
+                FillCircleWithLines(hdc, c.xc, c.yc, c.R, c.quarter, c.color);
+                CircleDirect(hdc, c.xc, c.yc, c.R, c.color); 
+                break;
+            case FILL_CIRCLES:
+                FillCircleWithCircles(hdc, c.xc, c.yc, c.R, c.quarter, c.color);
+                CircleDirect(hdc, c.xc, c.yc, c.R, c.color);
+                break;
+            }
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == BEZIER && tempPoints.size() == 4) {
+            BezierCurve b;
+            b.p0 = tempPoints[0];
+            b.p1 = tempPoints[1];
+            b.p2 = tempPoints[2];
+            b.p3 = tempPoints[3];
+            b.c0 = tempColors[0];
+            b.c1 = tempColors[1];
+            b.c2 = tempColors[2];
+            b.c3 = tempColors[3];
+            bezierCurves.push_back(b);
+            DrawBezierCurve(hdc, b.p0, b.c0, b.p1, b.c1, b.p2, b.c2, b.p3, b.c3);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == HERMITE && tempPoints.size() == 4) {
+            HermiteCurve h;
+            h.p0 = tempPoints[0];
+            h.p1 = tempPoints[1];
+            h.t0 = Point(tempPoints[2].x - tempPoints[0].x, tempPoints[2].y - tempPoints[0].y);
+            h.t1 = Point(tempPoints[3].x - tempPoints[1].x, tempPoints[3].y - tempPoints[1].y);
+            h.color = currentColor;
+            hermiteCurves.push_back(h);
+            DrawHermiteCurve(hdc, h.p0, h.p1, h.t0, h.t1, h.color);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == SQUARE_HERMITE && tempPoints.size() == 2) {
+            AdvancedShape s;
+            s.type = "square_hermite";
+            s.points = tempPoints;
+            s.color = currentColor;
+            advancedShapes.push_back(s);
+            Point topLeft(std::min(tempPoints[0].x, tempPoints[1].x), std::min(tempPoints[0].y, tempPoints[1].y));
+            int size = std::max(abs(tempPoints[1].x - tempPoints[0].x), abs(tempPoints[1].y - tempPoints[0].y));
+            FillSquareWithHermiteCurve(hdc, topLeft, size, s.color);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == RECTANGLE_BEZIER && tempPoints.size() == 2) {
+            AdvancedShape s;
+            s.type = "rectangle_bezier";
+            s.points = tempPoints;
+            s.color = currentColor;
+            advancedShapes.push_back(s);
+            Point topLeft(std::min(tempPoints[0].x, tempPoints[1].x), std::min(tempPoints[0].y, tempPoints[1].y));
+            Point bottomRight(std::max(tempPoints[0].x, tempPoints[1].x), std::max(tempPoints[0].y, tempPoints[1].y));
+            FillRectangleWithBezierCurve(hdc, topLeft, bottomRight, currentColor);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if (currentShapeType == EMPTY_SQUARE && tempPoints.size() == 2) {
+            AdvancedShape s;
+            s.type = "empty_square";
+            s.points = tempPoints;
+            s.color = currentColor;
+            advancedShapes.push_back(s);
+            Point topLeft(std::min(tempPoints[0].x, tempPoints[1].x), std::min(tempPoints[0].y, tempPoints[1].y));
+            int size = std::max(abs(tempPoints[1].x - tempPoints[0].x), abs(tempPoints[1].y - tempPoints[0].y));
+            if (size <= 0) size = 1;
+            DrawEmptySquare(hdc, topLeft, size, currentColor);
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if ((currentShapeType == POLYGON_CONVEX || currentShapeType == POLYGON_NONCONVEX) && tempPoints.size() >= (currentShapeType == POLYGON_CONVEX ? 3 : 4)) {
+            AdvancedShape s;
+            s.type = currentShapeType == POLYGON_CONVEX ? "polygon_convex" : "polygon_nonconvex";
+            s.points = tempPoints;
+            s.color = currentColor;
+            advancedShapes.push_back(s);
+            POINT* pArray = new POINT[s.points.size()];
+            for (size_t i = 0; i < s.points.size(); i++) {
+                pArray[i].x = s.points[i].x;
+                pArray[i].y = s.points[i].y;
+            }
+
+            if (currentShapeType == POLYGON_CONVEX) {
+                ConvexFill(hdc, pArray, s.points.size(), s.color);
+            }
+            else {
+                GeneralPolygonFill(hdc, pArray, s.points.size(), s.color);
+            }
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        else if ((currentShapeType == FLOOD_RECURSIVE || currentShapeType == FLOOD_NON_RECURSIVE) && tempPoints.size() == 1) {
+            AdvancedShape* targetBoundaryShape = nullptr;
+            Circle* targetBoundaryCircle = nullptr;
+            COLORREF boundaryColor;
+            bool foundValidBoundary = false;
+            
+            // search through circles
+            for (int i = circles.size() - 1; i >= 0; i--) {
+                Circle& circle = circles[i];
+                
+                // Check if the click point is inside this circle
+                int dx = p.x - circle.xc;
+                int dy = p.y - circle.yc;
+                double distance = sqrt(dx * dx + dy * dy);
+                
+                if (distance <= circle.R) {
+                    targetBoundaryCircle = &circle;
+                    boundaryColor = circle.color;
+                    foundValidBoundary = true;
+                    break; 
+                }
+            }
+            
+            if (!foundValidBoundary) {
+                for (int i = advancedShapes.size() - 1; i >= 0; i--) {
+                    if (advancedShapes[i].type == "empty_square") {
+                        AdvancedShape& boundaryShape = advancedShapes[i];
+                        
+                        Point topLeft(std::min(boundaryShape.points[0].x, boundaryShape.points[1].x),
+                                    std::min(boundaryShape.points[0].y, boundaryShape.points[1].y));
+                        Point bottomRight(std::max(boundaryShape.points[0].x, boundaryShape.points[1].x),
+                                        std::max(boundaryShape.points[0].y, boundaryShape.points[1].y));
+                        
+                        if (p.x >= topLeft.x && p.x <= bottomRight.x && p.y >= topLeft.y && p.y <= bottomRight.y) {
+                            targetBoundaryShape = &boundaryShape;
+                            boundaryColor = boundaryShape.color;
+                            foundValidBoundary = true;
+                            break; 
+                        }
+                    }
+                }
+            }
+            
+            if (foundValidBoundary) {
+                COLORREF initialColor = GetPixel(hdc, p.x, p.y);
+                
+                if (initialColor != boundaryColor) {
+                    AdvancedShape s;
+                    s.type = currentShapeType == FLOOD_RECURSIVE ? "flood_recursive" : "flood_nonrecursive";
+                    s.points = { Point(p.x, p.y) };
+                    s.color = currentColor;
+                    advancedShapes.push_back(s);
+                    
+                    if (currentShapeType == FLOOD_RECURSIVE) {
+                        FloodFillRecursive(hdc, p.x, p.y, currentColor, boundaryColor);
+                    }
+                    else {
+                        FloodFillNonRecursive(hdc, p.x, p.y, currentColor, boundaryColor);
+                    }
+                }
+            }
+            
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        break;
+    }
+
+    case WM_LBUTTONUP: {
+        break;
+    }
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        FillRect(hdc, &ps.rcPaint, bgBrush);
+        DrawAllShapes(hdc);
+        EndPaint(hwnd, &ps);
+        break;
+    }
+
+    case WM_SETCURSOR: {
+        SetCursor(LoadCursor(NULL, IDC_CROSS));
+        return TRUE;
+    }
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+
+    default:
+        return DefWindowProc(hwnd, msg, wp, lp);
+    }
+    return 0;
+}
+
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdshow) {
+    AllocConsole();
+    FILE* stream;
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+
+    std::cout << "Drawing App Started. Console linked.\n";
+
+    WNDCLASSW wc = { 0 };
+    wc.hbrBackground = bgBrush;
+    wc.hCursor = LoadCursor(NULL, IDC_CROSS); // Use cross cursor consistently
+    wc.hInstance = hInst;
+    wc.lpszClassName = L"DrawingAppClass";
+    wc.lpfnWndProc = WindowProcedure;
+
+    if (!RegisterClassW(&wc))
+        return -1;
+
+    CreateWindowW(L"DrawingAppClass", L"2D Drawing Program", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        100, 100, 800, 600, NULL, NULL, NULL, NULL);
+
+    MSG msg = { 0 };
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    return 0;
+}
