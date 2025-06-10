@@ -27,11 +27,18 @@
 #define ID_QUARTER_2 202
 #define ID_QUARTER_3 203
 #define ID_QUARTER_4 204
+#define ID_LINE_DDA 205
+#define ID_LINE_PARAMETRIC 206
 
+int Round(double m) {
+    return (int)(m + 0.5);
+}
 // Structures for shapes
 struct Line {
-    POINT start, end;
+    int x1, y1, x2, y2;
     COLORREF color;
+    int algorithm;
+   
 };
 
 struct Circle {
@@ -50,9 +57,10 @@ bool firstClick = true;
 
 enum ShapeType { NONE, LINE, CIRCLE };
 ShapeType currentShapeType = LINE;
-enum LineAlgorithm { BRESENHAM };
+enum LineAlgorithm { DDA,BRESENHAM,PARAMETRIC };
 enum CircleAlgorithm { DIRECT, POLAR, ITERATIVE_POLAR, MIDPOINT, MODIFIED_MIDPOINT, FILL_LINES, FILL_CIRCLES };
-LineAlgorithm currentLineAlgorithm = BRESENHAM;
+
+LineAlgorithm currentLineAlgorithm = DDA;
 CircleAlgorithm currentCircleAlgorithm = DIRECT;
 int currentQuarter = 1; // Default quarter
 
@@ -202,26 +210,214 @@ void CircleModifiedMidpoint(HDC hdc, int xc, int yc, int R, COLORREF c) {
     }
 }
 
-void DrawBresenhamLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color) {
-    int dx = abs(x2 - x1), dy = abs(y2 - y1);
-    int sx = x1 < x2 ? 1 : -1;
-    int sy = y1 < y2 ? 1 : -1;
-    int err = dx - dy;
+
+void DrawLineDDA(HDC hdc, int x1, int y1, int x2, int y2, COLORREF c)
+{
+
+    int dx = x2 - x1;
+    int dy = y2 - y1;
+    double x = x1;
+    double	y = y1;
+
+    SetPixel(hdc, x, y, c);
+    if (abs(dx) >= abs(dy))
+    {
+        int xi = dx > 0 ? 1 : -1;
+        double m = (double)dy / dx * xi;
+        while (x != x2)
+        {
+            x += xi;
+            y += m;
+            SetPixel(hdc, x, round(y), c);
+        }
+    }
+
+    else {
+        int yi = dy > 0 ? 1 : -1;
+        double m = (double)dx / dy * yi;
+
+        while (y != y2) {
+            y += yi;
+            x += m;
+            SetPixel(hdc, round(x), y, c);
+        }
+    }
+}
+void DrawLineBres(HDC hdc, int x1, int y1, int x2, int y2, COLORREF c)
+{
+    if (x2 < x1) {
+        swap(x1, x2);
+        swap(y1, y2);
+    }
+
+    int dx = abs(x2 - x1);
+    int dy = abs(y2 - y1);
+
+    // if line is vertical
+    if (dx == 0) {
+        int y = y1;
+        if (y < y2) {
+            while (y <= y2) {
+                SetPixel(hdc, x1, y, c);
+                y += 1;
+            }
+        }
+        else {
+            while (y >= y2) {
+                SetPixel(hdc, x1, y, c);
+                y -= 1;
+            }
+        }
+        return;
+    }
+
+
+    int x = x1, y = y1;
+    int sy = (y2 >= y1) ? 1 : -1;
+
+    bool isSteep = dy > dx;
+
+    if (isSteep) swap(dx, dy);
+
+    int d = -2 * dy + dx;
+    int d1 = -2 * dy;
+    int d2 = 2 * (dx - dy);
+
+    SetPixel(hdc, x, y, c);
+
+    while (x < x2) {
+        if (d < 0) {
+            d += d2;
+            if (isSteep) x += 1;
+            else y += sy;
+        }
+        else {
+            d += d1;
+        }
+
+        if (isSteep) y += sy;
+        else x += 1;
+
+        SetPixel(hdc, x, y, c);
+    }
+}
+void ParametricLine(HDC hdc, int x1, int y1,int x2, int y2, COLORREF c1)
+{
+    int alpha1 = x2 - x1;
+    int alpha2 = y2 - y1;
+
+    double steps = 1.0 / max(abs(alpha1),
+        abs(alpha2));
+
+    SetPixel(hdc, x1, y1, c1);
+    for (double t = 0; t < 1; t += steps)
+    {
+
+        double x = (alpha1 * t) + x1;
+        double y = (alpha2 * t) + y1;
+
+        SetPixel(hdc, Round(x), Round(y), c1);
+    }
+    SetPixel(hdc, x2, y2, c1);
+}
+//-----------------------------------------------------------------
+struct Point {
+    int x, y;
+};
+POINT points[4];
+static int pointCount = 0;
+static int xmin, ymin, xmax, ymax;
+
+//-------------------------------------------------------------------
+//clip point
+void clippingPoint(HDC hdc, int x, int y, COLORREF c) {
+    if (x >= xmin && x <= xmax && y >= ymin && y <= ymax) {
+        SetPixel(hdc, x, y, c);
+    }
+
+}
+//-----------------------------------------------------------------
+union OutCode
+{
+    unsigned All : 4;
+    struct { unsigned left : 1, top : 1, right : 1, bottom : 1; };
+};
+
+OutCode GetOutCode(double x, double y)
+{
+    OutCode out;
+    out.All = 0;
+    if (x < xmin) out.left = 1;
+    else if (x > xmax) out.right = 1;
+
+    if (y < ymin) out.top = 1;
+    else if (y > ymax) out.bottom = 1;
+
+    return out;
+}
+
+
+Point VIntersect(Point p1, Point p2, double xedge)
+{
+    Point result;
+    result.x = xedge;
+    result.y = ((xedge - p1.x) * (p2.y - p1.y) / (p2.x - p1.x)) + p1.y;
+    return result;
+}
+Point HIntersect(Point p1, Point p2, double yedge)
+{
+    Point result;
+    result.y = yedge;
+    result.x = ((yedge - p1.y) * (p2.x - p1.x) / (p2.y - p1.y)) + p1.x;
+    return result;
+}
+
+bool ClipLine(Point& p1, Point& p2) {
+    OutCode out1 = GetOutCode(p1.x, p1.y);
+    OutCode out2 = GetOutCode(p2.x, p2.y);
 
     while (true) {
-        SetPixel(hdc, x1, y1, color);
-        if (x1 == x2 && y1 == y2) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x1 += sx; }
-        if (e2 < dx) { err += dx; y1 += sy; }
+        if (out1.All == 0 && out2.All == 0) return true;
+
+        if ((out1.All & out2.All) != 0) return false;
+
+        if (out1.All) {
+            if (out1.left) p1 = VIntersect(p1, p2, xmin);
+            else if (out1.top) p1 = HIntersect(p1, p2, ymin);
+            else if (out1.right) p1 = VIntersect(p1, p2, xmax);
+            else if (out1.bottom) p1 = HIntersect(p1, p2, ymax);
+
+            out1 = GetOutCode(p1.x, p1.y);
+        }
+        else {
+            if (out2.left) p2 = VIntersect(p1, p2, xmin);
+            else if (out2.top) p2 = HIntersect(p1, p2, ymin);
+            else if (out2.right) p2 = VIntersect(p1, p2, xmax);
+            else if (out2.bottom) p2 = HIntersect(p1, p2, ymax);
+
+            out2 = GetOutCode(p2.x, p2.y);
+        }
     }
 }
 
+
 void DrawAllShapes(HDC hdc) {
     // Draw lines
-    for (auto& line : lines) {
-        DrawBresenhamLine(hdc, line.start.x, line.start.y, line.end.x, line.end.y, line.color);
-    }
+for (auto& line : lines) {
+    
+        switch (line.algorithm) {
+        case DDA:
+            DrawLineDDA(hdc, line.x1, line.y1, line.x2, line.y2, line.color);
+            break;
+        case BRESENHAM:
+            DrawLineBres(hdc, line.x1, line.y1, line.x2, line.y2, line.color);
+            break;
+        case PARAMETRIC:
+            ParametricLine(hdc, line.x1, line.y1, line.x2, line.y2, line.color);
+            break;
+        }
+    
+}
     // Draw circles
     for (auto& circle : circles) {
         switch (circle.algorithm) {
@@ -254,14 +450,15 @@ void DrawAllShapes(HDC hdc) {
 
 void SaveData() {
     std::ofstream file("shapes.txt");
+    
     // Save lines
     file << "Lines\n";
     for (auto& line : lines) {
-        file << line.start.x << " " << line.start.y << " "
-            << line.end.x << " " << line.end.y << " "
+        file << line.x1 << " " << line.y1 << " "
+            << line.x2 << " " << line.y2 << " "
             << (int)GetRValue(line.color) << " "
             << (int)GetGValue(line.color) << " "
-            << (int)GetBValue(line.color) << "\n";
+            << (int)GetBValue(line.color) <<" " << line.algorithm << "\n";
     }
     // Save circles
     file << "Circles\n";
@@ -289,14 +486,14 @@ void LoadData(HWND hwnd) {
     int countLines = 0, countCircles = 0;
 
     while (std::getline(file, lineType)) {
-        if (lineType == "Lines") {
-            Line l;
+         if (lineType == "Lines") {
+             Line l;
             int r, g, b;
-            while (file >> l.start.x >> l.start.y >> l.end.x >> l.end.y >> r >> g >> b) {
-                l.color = RGB(r, g, b);
-                lines.push_back(l);
-                countLines++;
-                if (file.peek() == '\n') break; // Move to next line type
+            while (file >> l.x1 >> l.y1 >> l.x2 >> l.y2 >> r >> g >> b) {
+               l.color = RGB(r, g, b);
+               lines.push_back(l);
+               countLines++;
+               if (file.peek() == '\n') break; // Move to next line type
             }
         }
         else if (lineType == "Circles") {
@@ -338,6 +535,8 @@ void AddMenus(HWND hwnd) {
 
     // Line algorithms
     AppendMenu(hLineAlgorithms, MF_STRING, ID_LINE_BRESENHAM, "Bresenham Line");
+    AppendMenu(hLineAlgorithms, MF_STRING, ID_LINE_DDA, "DDA Line"); 
+    AppendMenu(hLineAlgorithms, MF_STRING, ID_LINE_PARAMETRIC, "Parametric Line");
     AppendMenu(hLineAlgorithms, MF_SEPARATOR, 0, NULL);
     AppendMenu(hLineAlgorithms, MF_STRING, 0, "Select to draw lines");
 
@@ -407,6 +606,14 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             currentShapeType = LINE;
             currentLineAlgorithm = BRESENHAM;
             break;
+        case ID_LINE_DDA:
+            currentShapeType = LINE;
+            currentLineAlgorithm = DDA;
+            break;
+        case ID_LINE_PARAMETRIC:
+            currentShapeType = LINE;
+            currentLineAlgorithm = PARAMETRIC;
+            break;
         case ID_CIRCLE_DIRECT:
             currentShapeType = CIRCLE;
             currentCircleAlgorithm = DIRECT;
@@ -465,9 +672,12 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HDC hdc = GetDC(hwnd);
         if (currentShapeType == LINE) {
             Line l;
-            l.start = tempPoint;
-            l.end = endPoint;
+            l.x1 = tempPoint.x;
+            l.y1 = tempPoint.y;
+            l.x2 = endPoint.x;
+            l.y2 = endPoint.y;
             l.color = currentColor;
+            l.algorithm = currentLineAlgorithm;
             lines.push_back(l);
         }
         else if (currentShapeType == CIRCLE) {
