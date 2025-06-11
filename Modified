@@ -14,6 +14,9 @@
 using namespace std;
 
 
+
+
+
 #define ID_FILE_EXIT 1
 #define ID_COLOR_RED 2
 #define ID_COLOR_GREEN 3
@@ -45,6 +48,7 @@ using namespace std;
 #define ID_FLOOD_NON_RECURSIVE 307
 #define ID_EMPTY_SQUARE 308
 
+
 #define ID_LINE_BRESENHAM 100
 #define ID_LINE_DDA 205
 #define ID_LINE_PARAMETRIC 206
@@ -54,12 +58,42 @@ using namespace std;
 #define ID_CLIP_NONE    4001
 #define ID_CLIP_RECTANGLE  4002
 #define ID_CLIP_SQUARE     4003
+#define ID_CLIP_POLYGON     4005
+
+#define ID_ELLIPSE_DIRECT    5001
+#define ID_ELLIPSE_POLAR  5002
+#define ID_ELLIPSE_MIDPOINT     5003
+#define ID_SPLINES_CURVE     5004
+#define ID_DROW_SPLINES    5005
+
+
+void ShowConsole() {
+    AllocConsole();
+
+    FILE* fOut;
+    FILE* fIn;
+
+    freopen_s(&fOut, "CONOUT$", "w", stdout); 
+    freopen_s(&fIn, "CONIN$", "r", stdin);    
+}
+
+
 
 // Structures for shapes
 
 int Round(double m) {
     return (int)(m + 0.5);
 }
+
+
+struct vector2 {  // i will enter points like p(1,2) so i want to take x=1,y=2
+    double x, y;
+    vector2(double a = 0, double b = 0) {
+        x = a;
+        y = b;
+
+    }
+};
 
 // Structures for shapes
 
@@ -103,22 +137,53 @@ struct Entry {
     int xmin, xmax;
 };
 
+struct Polygonc {
+    vector<Point> p;
+    int xl, xr, yb, yt;
+    COLORREF color;
+
+    
+};
+
 struct EdgeRec {
     double x;
     double minv;
     int ymax;
     bool operator<(const EdgeRec& r) const { return x < r.x; }
 };
+struct Ellipsee {
+    int xc, yc, a,b;
+    COLORREF color;
+    int quarter; // 1 to 4 for quarter-based drawing
+    int algorithm; // 0: Direct, 1: Polar, 2: Iterative Polar, 3: Midpoint, 4: Modified Midpoint, 5: Fill Lines, 6: Fill Circles
+};
+struct Splines {
+    int n;
+    vector<Point> p; 
+    double c;
+    COLORREF color;
+};
 
 typedef std::list<EdgeRec> EdgeList;
 
 
-std::vector<Point> pointsArray;
-std::vector<Line> lines; 
-std::vector<Circle> circles;
-std::vector<BezierCurve> bezierCurves;
-std::vector<HermiteCurve> hermiteCurves;
-std::vector<AdvancedShape> advancedShapes;
+vector<Point> pointsArray;
+vector<Line> lines;
+vector<Circle> circles;
+vector<BezierCurve> bezierCurves;
+vector<HermiteCurve> hermiteCurves;
+vector<AdvancedShape> advancedShapes;
+vector<Ellipsee> ellipses;
+vector<Splines>splines;
+vector<Polygonc>polygons;
+
+
+
+int splinesSize;
+double mytenstion;
+
+
+
 COLORREF currentColor = RGB(0, 0, 0); // Default: black
 HBRUSH bgBrush = CreateSolidBrush(RGB(255, 255, 255)); // White
 POINT tempPoint;
@@ -127,17 +192,23 @@ std::vector<Point> tempPoints;
 std::vector<COLORREF> tempColors;
 static int windowWidth = 800;
 static int windowHeight = 600;
+int commandID;
 
-enum ShapeType { NONE, LINE, CIRCLE, BEZIER, HERMITE, SQUARE_HERMITE, RECTANGLE_BEZIER, POLYGON_CONVEX, POLYGON_NONCONVEX, FLOOD_RECURSIVE, FLOOD_NON_RECURSIVE, EMPTY_SQUARE,Rec,Square };
+enum ShapeType { NONE, LINE, CIRCLE,ELLIPSE ,BEZIER, HERMITE,SPLINES ,SQUARE_HERMITE, RECTANGLE_BEZIER, POLYGON,POLYGON_CONVEX, POLYGON_NONCONVEX, FLOOD_RECURSIVE, FLOOD_NON_RECURSIVE, EMPTY_SQUARE, Rec, Square };
 ShapeType currentShapeType = LINE;
 enum LineAlgorithm { DDA, BRESENHAM, PARAMETRIC };
 enum CircleAlgorithm { DIRECT, POLAR, ITERATIVE_POLAR, MIDPOINT, MODIFIED_MIDPOINT, FILL_LINES, FILL_CIRCLES };
 enum ClippingMethod { None = 0, RECTANGLE = 1, SQUARE = 2 };
 
+
+enum EllipseAlgorithm { DIRECTE, POLARE, MIDPOINTE };
+
+
 LineAlgorithm currentLineAlgorithm = DDA;
 CircleAlgorithm currentCircleAlgorithm = DIRECT;
 int currentQuarter = 1; // Default quarter
 ClippingMethod currentClippingMethod = None;
+EllipseAlgorithm ellipseAlgorithm = DIRECTE;
 
 
 // Circle functions
@@ -285,6 +356,102 @@ void CircleModifiedMidpoint(HDC hdc, int xc, int yc, int R, COLORREF c) {
         Draw8Points(hdc, xc, yc, x, y, c);
     }
 }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//ELLIPSE
+
+
+
+void Draw4Points(HDC hdc, int xc, int yc, int x, int y, COLORREF c) {
+
+    SetPixel(hdc, xc + x, yc + y, c);
+    SetPixel(hdc, xc - x, yc + y, c);
+    SetPixel(hdc, xc + x, yc - y, c);
+    SetPixel(hdc, xc - x, yc - y, c);
+
+
+}
+// a is width and b is height
+void ellipseDirect(HDC hdc, int xc, int yc, int a, int b, COLORREF c) {
+    int xRegion1 = 0;
+    int yRegion1;
+    while (xRegion1 <= a) {
+
+
+
+        yRegion1 = (int)round(b * sqrt(1 - (double)(xRegion1 * xRegion1) / (a * a)));
+        Draw4Points(hdc, xc, yc, xRegion1, yRegion1, c);
+        xRegion1++;
+    }
+    int xRegion2;
+    int yRegion2 = 0;
+
+
+    while (yRegion2 <= b) {
+        xRegion2 = (int)round(a * sqrt(1 - (double)(yRegion2 * yRegion2) / (b * b)));
+        Draw4Points(hdc, xc, yc, xRegion2, yRegion2, c);
+        yRegion2++;
+    }
+
+
+}
+
+void ellipsePolar(HDC hdc, int xc, int yc, int a, int b, COLORREF c) {
+    int x, y;
+    double theta = 0, dtheta = 1.0 / max(a, b);
+    while (theta <= 2 * 3.14159265) {
+        x = (int)round(a * cos(theta));
+        y = (int)round(b * sin(theta));
+        Draw4Points(hdc, xc, yc, x, y, c);
+        theta += dtheta;
+    }
+}
+
+void MidpointEllipse(HDC hdc, int xc, int yc, int a, int b, COLORREF c) {
+    int a2 = a * a;
+    int b2 = b * b;
+    int x = 0, y = b;
+    int d1 = b2 - a2 * b + (a2 / 4);
+    int dx = 2 * b2 * x;
+    int dy = 2 * a2 * y;
+
+    Draw4Points(hdc, xc, yc, x, y, c);
+
+    while (dx < dy) {
+        x++;
+        dx += 2 * b2;
+        if (d1 < 0) {
+            d1 += dx + b2;
+        }
+        else {
+            y--;
+            dy -= 2 * a2;
+            d1 += dx - dy + b2;
+        }
+        Draw4Points(hdc, xc, yc, x, y, c);
+    }
+
+    int d2 = b2 * (x + 0.5) * (x + 0.5) + a2 * (y - 1) * (y - 1) - a2 * b2;
+    while (y > 0) {
+        y--;
+        dy -= 2 * a2;
+        if (d2 > 0) {
+            d2 += a2 - dy;
+        }
+        else {
+            x++;
+            dx += 2 * b2;
+            d2 += dx - dy + a2;
+        }
+        Draw4Points(hdc, xc, yc, x, y, c);
+    }
+}
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 //      lines
 void DrawLineDDA(HDC hdc, int x1, int y1, int x2, int y2, COLORREF c)
 {
@@ -395,6 +562,10 @@ void ParametricLine(HDC hdc, int x1, int y1, int x2, int y2, COLORREF c1)
     }
     SetPixel(hdc, x2, y2, c1);
 }
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+// 
 //-----------------------------------------------------------------
 POINT points[2];
 int pointCount = 0;
@@ -429,7 +600,7 @@ OutCode GetOutCode(double x, double y)
 }
 
 
-Point VIntersect(Point p1, Point p2, double xedge) {
+Point VIntersect(Point& p1, Point& p2, int xedge) {
     Point result;
     result.x = xedge;
     if (p2.x - p1.x == 0)  // vertical line 
@@ -439,7 +610,7 @@ Point VIntersect(Point p1, Point p2, double xedge) {
     return result;
 }
 
-Point HIntersect(Point p1, Point p2, double yedge) {
+Point HIntersect(Point& p1, Point& p2, int yedge) {
     Point result;
     result.y = yedge;
     if (p2.y - p1.y == 0)  // if line is horizontal
@@ -478,6 +649,110 @@ bool ClipLine(Point& p1, Point& p2) {
 
     }
 }
+
+
+
+
+/////////////////////////////////////////////////////////////////////////
+
+
+typedef vector<Point>PolygonPoints;
+
+typedef bool (*IsInFunc)(Point& v, int edge);
+typedef Point(*IntersectFunc)(Point& v1, Point& v2, int edge);
+
+PolygonPoints ClipWithEdge(PolygonPoints p, int edge, IsInFunc In, IntersectFunc Intersect)
+{
+    PolygonPoints OutList;
+    Point v1 = p[p.size() - 1];
+    bool v1_in = In(v1, edge);
+    for (int i = 0;i < (int)p.size();i++)
+    {
+        Point v2 = p[i];
+        bool v2_in = In(v2, edge);
+        if (!v1_in && v2_in)
+        {
+
+            OutList.push_back(Intersect(v1, v2, edge));
+            OutList.push_back(v2);
+        }
+        else if (v1_in && v2_in) OutList.push_back(v2);
+        else if (v1_in) OutList.push_back(Intersect(v1, v2, edge));
+        v1 = v2;
+        v1_in = v2_in;
+    }
+    return OutList;
+}
+
+
+bool InLeft(Point& v, int edge)
+{
+    return v.x >= edge;
+}
+bool InRight(Point& v, int edge)
+{
+    return v.x <= edge;
+}
+bool InTop(Point& v, int edge)
+{
+    return v.y >= edge;
+}
+bool InBottom(Point& v, int edge)
+{
+    return v.y <= edge;
+}
+
+
+
+
+
+void PolygonClip(HDC hdc, vector<Point> p, int xl, int xr, int yt, int yb,COLORREF c) {
+
+
+    p = ClipWithEdge(p, xl, InLeft, VIntersect);
+    p = ClipWithEdge(p, xr, InRight, VIntersect);
+    p = ClipWithEdge(p, yt, InTop, HIntersect);
+    p = ClipWithEdge(p, yb, InBottom, HIntersect);
+    Point v1 = p[p.size() - 1];
+
+    HPEN hPen = CreatePen(PS_SOLID, 1, c);           
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen); 
+
+    for (int i = 0;i < p.size();i++)
+    {
+        Point v2 = p[i];
+        
+
+        MoveToEx(hdc, Round(v1.x), Round(v1.y), NULL);
+        LineTo(hdc, Round(v2.x), Round(v2.y));
+
+       
+
+        v1 = v2;
+    }
+    SelectObject(hdc, hOldPen);  
+    DeleteObject(hPen); 
+
+
+
+
+
+}
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+
 // Bezier
 
 void DrawBezierCurve(HDC hdc, Point p0, COLORREF c0, Point p1, COLORREF c1, Point p2, COLORREF c2, Point p3, COLORREF c3) {
@@ -537,6 +812,34 @@ void DrawHermiteCurve(HDC hdc, Point p0, Point p1, Point t0, Point t1, COLORREF 
     SelectObject(hdc, hOldPen);
     DeleteObject(hPen);
 }
+
+
+
+void DrawCardinalSpline(HDC hdc, vector<Point>P, int n, double c, COLORREF color1)
+{
+
+
+    if (n < 2) return; 
+
+    std::vector<Point> newPoints;
+    newPoints.push_back(P[0]);           
+    newPoints.insert(newPoints.end(), P.begin(), P.end());
+    newPoints.push_back(P[n - 1]);       
+
+    double c1 = 1 - c;
+    Point T0(c1 * (newPoints[2].x - newPoints[0].x), c1 * (newPoints[2].y - newPoints[0].y));
+
+    for (int i = 2; i < newPoints.size() - 1; i++) {
+        Point T1(c1 * (newPoints[i + 1].x - newPoints[i - 1].x),
+            c1 * (newPoints[i + 1].y - newPoints[i - 1].y));
+
+        DrawHermiteCurve(hdc, newPoints[i - 1], newPoints[i], T0, T1, color1);
+        T0 = T1;
+    }
+}
+
+
+
 
 void FillSquareWithHermiteCurve(HDC hdc, Point topLeft, int size, COLORREF color) {
     MoveToEx(hdc, topLeft.x, topLeft.y, NULL);
@@ -744,6 +1047,17 @@ void DrawClippingSquare(HDC hdc) {
         DrawLineBres(hdc, xmin, ymax, xmin, ymin, RGB(255, 0, 0));
     }
 }
+
+
+
+
+
+
+
+
+
+
+
 void DrawAllShapes(HDC hdc) {
     // Draw lines
     if (currentClippingMethod == RECTANGLE && clippingEnabled) {
@@ -771,7 +1085,7 @@ void DrawAllShapes(HDC hdc) {
         xmax = ymax = INT_MAX;
     }
 
-    
+
     // Draw lines
     for (auto& line : lines) {
         if (currentClippingMethod != None) {
@@ -835,12 +1149,55 @@ void DrawAllShapes(HDC hdc) {
             break;
         }
     }
+
+
+
+    for (auto& e : ellipses) {
+        switch (e.algorithm) {
+        case DIRECT:
+            ellipseDirect(hdc, e.xc, e.yc, e.a,e.b, e.color);
+            break;
+        case POLAR:
+            ellipsePolar(hdc, e.xc, e.yc, e.a, e.b, e.color);
+            break;
+       
+        case MIDPOINT:
+            MidpointEllipse(hdc, e.xc, e.yc, e.a, e.b, e.color);
+       
+      
+        }
+    }
+
+    for (auto& polygon : polygons) {
+        PolygonClip(hdc, polygon.p, polygon.xl, polygon.xr, polygon.yt, polygon.yb,polygon.color);
+    }
+
+
+
+
+
+
+
+
+
+
+
+
     for (auto& bezier : bezierCurves) {
         DrawBezierCurve(hdc, bezier.p0, bezier.c0, bezier.p1, bezier.c1, bezier.p2, bezier.c2, bezier.p3, bezier.c3);
     }
     for (auto& hermite : hermiteCurves) {
         DrawHermiteCurve(hdc, hermite.p0, hermite.p1, hermite.t0, hermite.t1, hermite.color);
     }
+
+    for (auto& spline : splines) {
+        DrawCardinalSpline(hdc, spline.p,spline.n,spline.c,spline.color);
+    }
+
+
+   
+    
+    
     for (auto& shape : advancedShapes) {
         if (shape.type == "square_hermite" && shape.points.size() == 2) {
             int size = std::max(abs(shape.points[1].x - shape.points[0].x), abs(shape.points[1].y - shape.points[0].y));
@@ -878,6 +1235,9 @@ void DrawAllShapes(HDC hdc) {
     }
 }
 
+
+
+
 void SaveData() {
     std::ofstream file("shapes.txt");
     // Save lines
@@ -909,6 +1269,52 @@ void SaveData() {
             << (int)GetBValue(circle.color) << " "
             << circle.quarter << " " << circle.algorithm << "\n";
     }
+
+
+    // Save Ellipse
+    file << "Ellipse\n";
+    for (auto& e : ellipses) {
+        file << e.xc << " " << e.yc << " " << e.a << " "<<e.b<<" "
+            << (int)GetRValue(e.color) << " "
+            << (int)GetGValue(e.color) << " "
+            << (int)GetBValue(e.color) << " "
+            << e.quarter << " " << e.algorithm << "\n";
+    }
+    
+    
+    
+    
+    
+    
+    file << "Spline\n";
+    for (auto& spline : splines) {
+        file << spline.n << " ";
+        for (int i = 0; i < spline.n; i++) {
+            file << spline.p[i].x << " " << spline.p[i].y << " ";
+        }
+        file << spline.c << " ";  
+        file << (int)GetRValue(spline.color) << " "
+            << (int)GetGValue(spline.color) << " "
+            << (int)GetBValue(spline.color) << "\n";  
+    }
+
+    file << "Polygon\n";
+    for (auto& polygon : polygons) {
+        for (int i = 0; i < 4; i++) {
+            file << polygon.p[i].x << " " << polygon.p[i].y << " ";
+        }
+
+        file << (int)GetRValue(polygon.color) << " "
+            << (int)GetGValue(polygon.color) << " "
+            << (int)GetBValue(polygon.color) << "\n";
+    }
+
+
+
+    
+    
+    
+    
     file << "BezierCurves\n";
     for (auto& bezier : bezierCurves) {
         file << bezier.p0.x << " " << bezier.p0.y << " "
@@ -937,10 +1343,14 @@ void SaveData() {
         file << (int)GetRValue(shape.color) << " " << (int)GetGValue(shape.color) << " " << (int)GetBValue(shape.color) << "\n";
     }
     file.close();
-    std::cout << "Saved " << lines.size() << " line(s), " << circles.size() << " circle(s), "
-        << bezierCurves.size() << " Bezier curve(s), " << hermiteCurves.size() << " Hermite curve(s), "
+    std::cout << "Saved " << lines.size() << " line(s), " << circles.size() << " circle(s), "<<ellipses.size()<<" ellipse(s), "
+        << bezierCurves.size() << " Bezier curve(s), " << hermiteCurves.size() << " Hermite curve(s), "<<splines.size()<<" spline(s) "<<polygons.size()<<" Polygon(s) "
         << advancedShapes.size() << " advanced shape(s) to shapes.txt\n";
 }
+
+
+
+
 
 void LoadData(HWND hwnd) {
     std::ifstream file("shapes.txt");
@@ -951,13 +1361,16 @@ void LoadData(HWND hwnd) {
 
     lines.clear();
     circles.clear();
+    ellipses.clear();
     bezierCurves.clear();
     hermiteCurves.clear();
     advancedShapes.clear();
+    polygons.clear();
+    splines.clear();
     tempPoints.clear();
     tempColors.clear();
     std::string lineType;
-    int countLines = 0, countCircles = 0, countBeziers = 0, countHermites = 0, countAdvanced = 0;
+    int countLines = 0,countPolygons=0 ,countCircles = 0,countEllipse=0, countBeziers = 0, countHermites = 0, countAdvanced = 0, coutSplines=0;
 
     while (std::getline(file, lineType)) {
         if (lineType == "Lines") {
@@ -993,6 +1406,40 @@ void LoadData(HWND hwnd) {
                 if (file.peek() == EOF || file.peek() == '\n') break;
             }
         }
+
+
+        else if (lineType == "Ellipse") {
+            Ellipsee e;
+            int r, g, b;
+            while (file >> e.xc >> e.yc >> e.a>>e.b >> r >> g >> b >> e.quarter >> e.algorithm) {
+                e.color = RGB(r, g, b);
+                ellipses.push_back(e);
+                countEllipse++;
+                if (file.peek() == EOF || file.peek() == '\n') break;
+            }
+        }
+
+        else if (lineType == "Polygon") {
+            Polygonc polygon;
+            int r, g, b;
+
+            
+            for (int i = 0; i < 4; i++) {
+                file >> polygon.p[i].x >> polygon.p[i].y;
+            }
+
+            file >> r >> g >> b;
+            polygon.color = RGB(r, g, b);
+            polygons.push_back(polygon);
+            countPolygons++;
+
+            if (file.peek() == EOF || file.peek() == '\n') break;
+        }
+
+
+
+
+
         else if (lineType == "BezierCurves") {
             BezierCurve b;
             int r0, g0, b0, r1, g1, b1, r2, g2, b2, r3, g3, b3;
@@ -1017,6 +1464,34 @@ void LoadData(HWND hwnd) {
                 if (file.peek() == '\n' || file.peek() == EOF) break;
             }
         }
+       
+        
+        else if (lineType == "Spline") {
+            Splines s;
+            int r, g, b;
+            file >> s.n;
+
+            if (s.n <= 0 || s.n > 1000) {
+                MessageBox(NULL, L"Invalid number of spline points!", L"Error", MB_OK);
+                return;
+            }
+
+            s.p.resize(s.n);
+            for (int i = 0; i < s.n; i++) {
+                file >> s.p[i].x >> s.p[i].y;
+            }
+
+            file >> s.c; 
+
+            file >> r >> g >> b;
+            s.color = RGB(r, g, b);
+
+            splines.push_back(s);
+            coutSplines++;
+        }
+
+        
+        
         else if (lineType == "AdvancedShapes") {
             AdvancedShape s;
             int numPoints, r, g, b;
@@ -1048,12 +1523,22 @@ void LoadData(HWND hwnd) {
         }
     }
     file.close();
-    std::cout << "Loaded " << countLines << " line(s), " << countCircles << " circle(s), "
+    std::cout << "Loaded " << countLines << " line(s), " << countCircles << " circle(s), "<< countEllipse<<" ellipse(s), "
         << countBeziers << " Bezier curve(s), " << countHermites << " Hermite curve(s), "
         << countAdvanced << " advanced shape(s) from shapes.txt\n";
 
     InvalidateRect(hwnd, NULL, TRUE);
 }
+
+
+
+
+
+
+
+
+
+
 
 void AddMenus(HWND hwnd) {
     HMENU hMenubar = CreateMenu();
@@ -1062,6 +1547,10 @@ void AddMenus(HWND hwnd) {
     HMENU hPoint = CreateMenu();
     HMENU hLineAlgorithms = CreateMenu();
     HMENU hCircleAlgorithms = CreateMenu();
+    HMENU hDrowSplines = CreateMenu();
+
+    HMENU hEllipseAlgorithms = CreateMenu();
+
     HMENU hAdvancedShapes = CreateMenu();
     HMENU hQuarter = CreateMenu();
     HMENU hClipping = CreateMenu();
@@ -1092,7 +1581,7 @@ void AddMenus(HWND hwnd) {
 
     // Circle algorithms
     AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_DIRECT, L"Direct Circle");
-    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_POLAR, L"Polar Circle");
+    AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_POLAR, L"Polar Circle2");
     AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_ITERATIVE_POLAR, L"Iterative Polar Circle");
     AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_MIDPOINT, L"Midpoint Circle");
     AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_MODIFIED_MIDPOINT, L"Modified Midpoint Circle");
@@ -1100,6 +1589,21 @@ void AddMenus(HWND hwnd) {
     AppendMenu(hCircleAlgorithms, MF_STRING, ID_CIRCLE_FILL_CIRCLES, L"Fill with Circles");
     AppendMenu(hCircleAlgorithms, MF_SEPARATOR, 0, NULL);
     AppendMenu(hCircleAlgorithms, MF_STRING, 0, L"Select to draw circles");
+    AppendMenu(hDrowSplines, MF_STRING, ID_DROW_SPLINES, L"Drow Splines");
+
+    
+
+    //Ellipse allgoritms
+
+    AppendMenu(hEllipseAlgorithms, MF_STRING, ID_ELLIPSE_DIRECT, L"Direct Ellipse");
+    AppendMenu(hEllipseAlgorithms, MF_STRING, ID_ELLIPSE_POLAR, L"Polar Ellipse");
+    AppendMenu(hEllipseAlgorithms, MF_STRING, ID_ELLIPSE_MIDPOINT, L"Midpoint Ellipse");
+
+
+
+
+
+
 
     // Quarter selection
     AppendMenu(hQuarter, MF_STRING, ID_QUARTER_1, L"Quarter 1 (Top-Right)");
@@ -1109,11 +1613,13 @@ void AddMenus(HWND hwnd) {
 
     AppendMenu(hAdvancedShapes, MF_STRING, ID_BEZIER_CURVE, L"Bezier Curve");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_HERMITE_CURVE, L"Hermite Curve");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_CLIP_POLYGON, L"Polygon");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_SPLINES_CURVE, L"Splines");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_SQUARE_HERMITE, L"Square (Hermite Fill)");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_RECTANGLE_BEZIER, L"Rectangle (Bezier Fill)");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_POLYGON_CONVEX, L"Polygon (Convex Fill)");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_POLYGON_NONCONVEX, L"Polygon (Non-Convex Fill)");
-    AppendMenu(hAdvancedShapes, MF_STRING, ID_FLOOD_RECURSIVE,  L"Flood Fill (Recursive)");
+    AppendMenu(hAdvancedShapes, MF_STRING, ID_FLOOD_RECURSIVE, L"Flood Fill (Recursive)");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_FLOOD_NON_RECURSIVE, L"Flood Fill (Non-Recursive)");
     AppendMenu(hAdvancedShapes, MF_STRING, ID_EMPTY_SQUARE, L"Empty Square");
     AppendMenu(hAdvancedShapes, MF_SEPARATOR, 0, NULL);
@@ -1129,15 +1635,30 @@ void AddMenus(HWND hwnd) {
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hFile, L"File");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hColor, L"Shape Color");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hPoint, L"Point");
-    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hLineAlgorithms,  L"Line Algorithms");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hLineAlgorithms, L"Line Algorithms");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hCircleAlgorithms, L"Circle Algorithms");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hAdvancedShapes, L"Advanced Shapes");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hQuarter, L"Quarter Selection");
     AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hClipping, L"Clipping");
+    AppendMenu(hMenubar, MF_POPUP, (UINT_PTR)hEllipseAlgorithms, L"Ellipse");
+
 
 
     SetMenu(hwnd, hMenubar);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
@@ -1166,6 +1687,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_SCREEN_CLEAR:
             lines.clear();
             circles.clear();
+            ellipses.clear();
             bezierCurves.clear();
             hermiteCurves.clear();
             advancedShapes.clear();
@@ -1219,6 +1741,60 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             currentShapeType = CIRCLE;
             currentCircleAlgorithm = FILL_CIRCLES;
             break;
+
+            //////////////////////////////////////////////
+
+        case ID_ELLIPSE_DIRECT:
+            currentShapeType = ELLIPSE;
+            ellipseAlgorithm = DIRECTE;
+            break;
+
+        case ID_ELLIPSE_POLAR:
+            currentShapeType = ELLIPSE;
+            ellipseAlgorithm = POLARE;
+            break;
+        case ID_ELLIPSE_MIDPOINT:
+            currentShapeType = ELLIPSE;
+            ellipseAlgorithm = MIDPOINTE;
+            break;
+
+
+        case ID_CLIP_POLYGON:
+            currentShapeType = POLYGON;
+            break;
+
+
+
+
+
+
+
+
+
+
+       
+
+        case ID_SPLINES_CURVE:
+            currentShapeType = SPLINES;
+            ShowConsole();
+
+            int numPoints;
+            double tension;
+
+            cout << "Enter number of points: ";
+            cin >> numPoints;
+
+            cout << "Enter tension value (e.g. 0.5): ";
+            cin >> tension;
+
+            // خزنيهم في متغيرات global أو static مؤقتًا
+            splinesSize = numPoints;
+            mytenstion = tension;
+
+            cout << "You can now click " << splinesSize << " points in the window.\n";
+            
+            break;
+
         case ID_BEZIER_CURVE:
             currentShapeType = BEZIER;
             break;
@@ -1283,6 +1859,14 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
 
+
+
+
+
+
+
+
+
     case WM_LBUTTONDOWN: {
         POINT p = { LOWORD(lp), HIWORD(lp) };
         tempPoints.push_back(Point(p.x, p.y));
@@ -1303,7 +1887,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
 
-        if ((currentClippingMethod == RECTANGLE || currentClippingMethod == SQUARE) && pointCount<=2) {
+        if ((currentClippingMethod == RECTANGLE || currentClippingMethod == SQUARE) && pointCount <= 2) {
             if (pointCount > 2) {
                 break;
             }
@@ -1311,7 +1895,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             points[pointCount++] = { p.x, p.y };
 
 
-            if (currentClippingMethod == RECTANGLE ) {
+            if (currentClippingMethod == RECTANGLE) {
                 if (pointCount == 2) {
                     clippingRect.left = min(points[0].x, points[1].x);
                     clippingRect.right = max(points[0].x, points[1].x);
@@ -1320,7 +1904,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
                     clippingRectDrawn = true;
                     clippingEnabled = true;
-                    
+
                     tempPoints.clear();
                     tempColors.clear();
                     firstClick = true;
@@ -1351,7 +1935,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
 
-        
+
         if (currentShapeType == LINE && tempPoints.size() == 2) {
             Line line;
             line.x1 = tempPoints[0].x;
@@ -1423,7 +2007,49 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
 
 
-         if (currentShapeType == CIRCLE && tempPoints.size() == 2) {
+
+
+
+
+        if (currentShapeType == POLYGON && tempPoints.size() == 4) {
+            Polygonc p;
+            p.p = tempPoints;
+
+            if (clippingEnabled) {
+                p.xl = clippingRect.left;
+                p.xr = clippingRect.right;
+                p.yt = clippingRect.top;
+                p.yb = clippingRect.bottom;
+            }
+            else {
+                // استخدم أبعاد نافذة الرسم كلها
+                RECT windowRect;
+                GetClientRect(hwnd, &windowRect); // hwnd هو handle النافذة
+
+                p.xl = windowRect.left;
+                p.xr = windowRect.right;
+                p.yt = windowRect.top;
+                p.yb = windowRect.bottom;
+            }
+
+            p.color = currentColor;
+            polygons.push_back(p);
+
+            PolygonClip(hdc, p.p, p.xl, p.xr, p.yt, p.yb, p.color);
+
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+
+
+
+
+
+
+
+        if (currentShapeType == CIRCLE && tempPoints.size() == 2) {
             Circle c;
             c.xc = tempPoint.x;
             c.yc = tempPoint.y;
@@ -1462,6 +2088,64 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             firstClick = true;
             ReleaseCapture();
         }
+        
+        
+        if (currentShapeType == ELLIPSE && tempPoints.size() == 2) {
+            Ellipsee e;
+            e.xc = (tempPoints[0].x + tempPoints[1].x) / 2;
+            e.yc = (tempPoints[0].y + tempPoints[1].y) / 2;
+            e.a = abs(tempPoints[0].x - tempPoints[1].x) / 2;
+            e.b = abs(tempPoints[0].y - tempPoints[1].y) / 2;
+            e.color = currentColor;
+            e.algorithm = ellipseAlgorithm;
+            e.quarter = currentQuarter;
+            ellipses.push_back(e);
+            switch (e.algorithm) {
+            case DIRECTE:
+                ellipseDirect(hdc, e.xc, e.yc, e.a,e.b, e.color);
+                break;
+            case POLARE:
+                ellipsePolar(hdc, e.xc, e.yc, e.a, e.b, e.color);
+                break;
+            
+            case MIDPOINTE:
+                MidpointEllipse(hdc, e.xc, e.yc, e.a, e.b, e.color);
+                break;
+           
+            }
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+
+
+
+        
+        
+        
+        
+        else if (currentShapeType == SPLINES && tempPoints.size() == splinesSize) {
+            Splines s;
+            s.p = tempPoints;
+            s.c = mytenstion;
+            s.n = splinesSize;
+           
+            s.color = currentColor;
+            splines.push_back(s);
+            DrawCardinalSpline(hdc, s.p,s.n,s.c,s.color);
+
+
+            tempPoints.clear();
+            tempColors.clear();
+            firstClick = true;
+            ReleaseCapture();
+        }
+        
+        
+        
+        
+        
         else if (currentShapeType == BEZIER && tempPoints.size() == 4) {
             BezierCurve b;
             b.p0 = tempPoints[0];
@@ -1627,7 +2311,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             firstClick = true;
             ReleaseCapture();
 
-            
+
 
         }
         break;
@@ -1662,6 +2346,22 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdshow) {
     AllocConsole();
     FILE* stream;
@@ -1689,4 +2389,4 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdsho
     }
 
     return 0;
-}
+} 
